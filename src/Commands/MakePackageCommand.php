@@ -10,8 +10,8 @@ use Illuminate\Filesystem\Filesystem;
 
 class MakePackageCommand extends Command
 {
-    protected $signature = 'packages:make {name : vendor/package} {--i|install} {--d|dev} {--branch=}';
-    protected $description = 'Create a new local package under /packages (use --dev to install as dev dependency)';
+    protected $signature = 'packages:make {names* : One or more vendor/package identifiers} {--i|install} {--d|dev} {--alias=} {--branch=}';
+    protected $description = 'Create new local package(s) under /{packages_path} (use --dev to install as dev dependency)';
 
     protected Filesystem $files;
 
@@ -23,42 +23,68 @@ class MakePackageCommand extends Command
 
     public function handle()
     {
-        $name = $this->argument('name');
-        if (!preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', $name)) {
-            $this->error('Name must be in vendor/package format.');
+        $names = (array) $this->argument('names');
+        if (empty($names)) {
+            $this->error('Provide at least one vendor/package.');
             return 1;
         }
 
-        [$vendor, $package] = explode('/', $name);
-        $vendorStudly = Str::studly(str_replace('-', ' ', $vendor));
-        $packageStudly = Str::studly(str_replace('-', ' ', $package));
-        $namespace = "{$vendorStudly}\\{$packageStudly}";
-    $packagesRoot = config('laravel-package-engine.packages_path', 'packages');
-    $basePath = base_path("{$packagesRoot}/{$vendor}/{$package}");
-
-        if ($this->files->exists($basePath)) {
-            $this->error("Package already exists: {$basePath}");
-            return 1;
+        $alias = $this->option('alias');
+        if ($alias && count($names) > 1) {
+            $this->warn('--alias is only applied when creating a single package. Ignoring for multiple names.');
+            $alias = null;
         }
-        $this->files->makeDirectory($basePath, 0755, true);
 
-        $this->copyStubs($basePath, [
-            '{{ vendor }}' => $vendor,
-            '{{ package }}' => $package,
-            '{{ vendorStudly }}' => $vendorStudly,
-            '{{ packageStudly }}' => $packageStudly,
-            '{{ namespace }}' => $namespace,
-            '{{ year }}' => date('Y'),
-        ]);
+        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
 
-        $this->info("Package created at: {$basePath}");
+        // Ensure vendor root exists; if created now, add to .gitignore
+        $packagesRootAbs = base_path($packagesRoot);
+        $createdRoot = false;
+        if (!is_dir($packagesRootAbs)) {
+            $this->files->makeDirectory($packagesRootAbs, 0755, true);
+            $createdRoot = true;
+        }
+        if ($createdRoot) {
+            $this->ensurePackagesPathInGitignore($packagesRoot);
+        }
 
-    if ($this->option('install')) {
-            $this->call('packages:install', [
-                'name' => "{$vendor}/{$package}",
-        '--dev' => $this->option('dev'),
-        '--branch' => $this->option('branch')
+        foreach ($names as $name) {
+            if (!preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', (string) $name)) {
+                $this->error("Invalid name: {$name}. Use vendor/package.");
+                return 1;
+            }
+
+            [$vendor, $package] = explode('/', $name);
+            $vendorStudly = Str::studly(str_replace('-', ' ', $vendor));
+            $packageStudly = Str::studly(str_replace('-', ' ', $package));
+            $namespace = "{$vendorStudly}\\{$packageStudly}";
+
+            $dirName = $alias ?: $package;
+            $basePath = base_path("{$packagesRoot}/{$vendor}/{$dirName}");
+            if ($this->files->exists($basePath)) {
+                $this->error("Package directory already exists: {$basePath}");
+                return 1;
+            }
+            $this->files->makeDirectory($basePath, 0755, true);
+
+            $this->copyStubs($basePath, [
+                '{{ vendor }}' => $vendor,
+                '{{ package }}' => $package,
+                '{{ vendorStudly }}' => $vendorStudly,
+                '{{ packageStudly }}' => $packageStudly,
+                '{{ namespace }}' => $namespace,
+                '{{ year }}' => date('Y'),
             ]);
+
+            $this->info("Package created at: {$basePath}");
+
+            if ($this->option('install')) {
+                $this->call('packages:install', [
+                    'names' => ["{$vendor}/{$package}"],
+                    '--dev' => $this->option('dev'),
+                    '--branch' => $this->option('branch'),
+                ]);
+            }
         }
 
         return 0;
@@ -66,7 +92,7 @@ class MakePackageCommand extends Command
 
     protected function copyStubs(string $basePath, array $replacements): void
     {
-        $customStubRoot = base_path('stubs/alex-kassel/laravel-package-engine/package');
+    $customStubRoot = base_path('stubs/alex-kassel/laravel-package-engine');
         $defaultStubRoot = __DIR__ . '/../../stubs/package';
         $stubRoot = is_dir($customStubRoot) ? $customStubRoot : $defaultStubRoot;
 
@@ -91,6 +117,22 @@ class MakePackageCommand extends Command
                 }
                 $this->files->put($targetPath, $content);
             }
+        }
+    }
+
+    protected function ensurePackagesPathInGitignore(string $packagesRoot): void
+    {
+        $gi = base_path('.gitignore');
+        $line = '/' . trim($packagesRoot, '/') . '/';
+        if (!file_exists($gi)) {
+            file_put_contents($gi, $line . PHP_EOL);
+            $this->info("Added {$line} to .gitignore");
+            return;
+        }
+        $content = file_get_contents($gi);
+        if (strpos($content, $line) === false) {
+            file_put_contents($gi, rtrim($content) . PHP_EOL . $line . PHP_EOL);
+            $this->info("Added {$line} to .gitignore");
         }
     }
 }

@@ -4,15 +4,16 @@
 [![Laravel Version](https://img.shields.io/badge/laravel-%5E10.0%7C%5E11.0%7C%5E12.0-red.svg)](https://laravel.com)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Ein Laravel-Helfer zur einfachen Erstellung und Verwaltung lokaler Pakete unter dem `/packages` Verzeichnis. Ersetzt das Domains-Konzept durch Packages und bleibt kompatibel mit Composer Path-Repositories und Symlinks.
+Ein Laravel-Helfer zur einfachen Erstellung und Verwaltung lokaler Packages unter dem konfigurierbaren `/{packages_path}` (Standard: `/packages`). Composer Path-Repositories und Symlinks/Junctions werden automatisch gehandhabt.
 
 ## Features
 - Pakete per Befehl erstellen: `packages:make`
-- Lokale Pakete installieren: `packages:install`
-- Pakete entfernen: `packages:remove`
+- Pakete installieren/entfernen: `packages:install`, `packages:uninstall`, `packages:remove`
 - Pakete neu installieren: `packages:reinstall`
+- Pakete neu erstellen (Verzeichnis löschen + neu aus Stubs bauen): `packages:remake`
 - Composer Path-Repositories und Symlinks automatisch einrichten
 - Vollständige Paket-Struktur via Stubs (Config, Routes, Views, Provider, Tests)
+- Fügt `/{packages_path}` automatisch zu `.gitignore` hinzu, wenn der Ordner angelegt wird
 
 ## Installation
 
@@ -37,28 +38,30 @@ php artisan vendor:publish --provider="AlexKassel\\LaravelPackageEngine\\Laravel
 php artisan vendor:publish --provider="AlexKassel\\LaravelPackageEngine\\LaravelPackageEngineServiceProvider" --tag=laravel-package-engine-config
 ```
 
+Die Engine-Config wird nach `config/alex-kassel/laravel-package-engine/config.php` veröffentlicht. Die Package-Stubs können unter `stubs/alex-kassel/laravel-package-engine` angepasst werden.
+
 ## Verwendung
 
 Neue Package-Struktur anlegen:
 
 ```bash
 php artisan packages:make vendor/package-name
-php artisan packages:make vendor/package-name --install
-php artisan packages:make vendor/package-name --install --dev
+php artisan packages:make vendor/package-name vendor/package2 --install
+php artisan packages:make vendor/package-name --install --dev --alias=short-name
 # Branch/Version angeben (override, Default siehe Config)
 php artisan packages:make vendor/package-name --install --branch=dev-main
 ```
 
-Lokale Pakete installieren:
+Lokale Pakete installieren/entfernen:
 
 ```bash
 php artisan packages:install vendor/package-name
+php artisan packages:install vendor/package-name vendor/package2 --dev
 php artisan packages:install --all
-php artisan packages:install vendor/package-name --dev
-# mit Branch/Version
-php artisan packages:install vendor/package-name --branch=dev-main
-php artisan packages:remove vendor/package-name
-php artisan packages:reinstall vendor/package-name
+php artisan packages:uninstall vendor/package-name
+php artisan packages:remove vendor/package-name --delete-dir
+php artisan packages:reinstall vendor/package-name --dev
+php artisan packages:remake vendor/package-name --install --dev --alias=short
 ```
 
 ### Hinweise zu Composer-Versionen
@@ -70,6 +73,22 @@ php artisan packages:reinstall vendor/package-name
 
 - Auf Windows wird automatisch auf eine Directory-Junction (`mklink /J`) zurückgefallen, wenn `symlink()` nicht erlaubt ist.
 - Falls die Erstellung fehlschlägt, führen Sie den Befehl als Administrator aus oder erstellen Sie den Link manuell.
+
+## Stubs und Config
+
+- Stubs veröffentlichen (angepasst werden unter `stubs/alex-kassel/laravel-package-engine`):
+
+```bash
+php artisan vendor:publish --tag=laravel-package-engine-stubs
+```
+
+- Engine-Config veröffentlichen (`config/alex-kassel/laravel-package-engine/config.php`):
+
+```bash
+php artisan vendor:publish --tag=laravel-package-engine-config
+```
+
+Die generierten Package-Provider veröffentlichen ihre Package-Config nach `config/vendor/name/config.php`.
 
 ## Ordnerstruktur
 
@@ -95,8 +114,8 @@ MIT – siehe LICENSE
 
 ## Best Practices / Tipps
 
-- Trennen Sie domänenfremde Logik in kleine Packages für Wiederverwendung.
-- Pinnen Sie Abhängigkeiten in den Package-`composer.json` Dateien klar (SemVer), nur lokal `dev-master` nutzen.
+- Trennen Sie Anwendungslogik in wiederverwendbare Packages.
+- Pinnen Sie Abhängigkeiten in den Package-`composer.json` Dateien klar (SemVer), lokal kann `dev-*` genutzt werden.
 - Nutzen Sie die veröffentlichten Stubs, um Ihre Standardstruktur projektweit anzupassen (`vendor:publish --tag=laravel-package-engine-stubs`).
 - Passen Sie `packages_path` in der Config an, wenn Ihre lokalen Pakete nicht unter `/packages` liegen sollen.
-- Dokumentieren Sie jedes Package minimal mit einem README und sinnvollen Beispielen (Routes, Config-Beispiele, View-Namespace).
+- Dokumentieren Sie jedes Package minimal mit einem README und Beispielen (Routes, Config-Beispiele, View-Namespace).

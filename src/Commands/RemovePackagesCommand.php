@@ -10,8 +10,9 @@ use Symfony\Component\Process\Process;
 
 class RemovePackagesCommand extends Command
 {
-    protected $signature = 'packages:remove {name? : vendor/package} {--all}';
-    protected $description = 'Remove a local package from composer (require + repository) and delete vendor symlink/junction';
+    protected $signature = 'packages:remove {names?* : vendor/package list} {--all} {--keep-dir}';
+    protected $description = 'Uninstall local package(s) from composer (require + repository), remove vendor link; delete package dir unless --keep-dir is given';
+    protected $aliases = ['packages:delete'];
 
     protected Filesystem $files;
 
@@ -29,7 +30,7 @@ class RemovePackagesCommand extends Command
             return 1;
         }
 
-        $targets = [];
+    $targets = [];
 
         if ($this->option('all')) {
             foreach (glob($packagesPath . '/*/*', GLOB_ONLYDIR) as $dir) {
@@ -38,12 +39,18 @@ class RemovePackagesCommand extends Command
                 $targets[] = "{$vendor}/{$package}";
             }
         } else {
-            $name = (string) $this->argument('name');
-            if (!$name || !preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', $name)) {
-                $this->error('Please provide a valid vendor/package name or use --all.');
+            $names = (array) $this->argument('names');
+            if (empty($names)) {
+                $this->error('Please provide one or more vendor/package names or use --all.');
                 return 1;
             }
-            $targets[] = $name;
+            foreach ($names as $n) {
+                if (!preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', (string) $n)) {
+                    $this->error("Invalid package name: {$n}");
+                    return 1;
+                }
+                $targets[] = (string) $n;
+            }
         }
 
         foreach ($targets as $name) {
@@ -52,6 +59,9 @@ class RemovePackagesCommand extends Command
             $this->removeComposerRepository($vendor, $package);
             $this->runComposerUpdate($vendor, $package);
             $this->removeVendorLink($vendor, $package);
+            if (!$this->option('keep-dir')) {
+                $this->deletePackageDir($vendor, $package);
+            }
             $this->info("Removed: {$vendor}/{$package}");
         }
 
@@ -62,7 +72,7 @@ class RemovePackagesCommand extends Command
     {
         $composerFile = base_path('composer.json');
         $composer = json_decode(file_get_contents($composerFile), true);
-    $repoPath = config('laravel-package-engine.packages_path', 'packages') . "/{$vendor}/{$package}";
+    $repoPath = $this->resolveRepoUrl($vendor, $package);
         $repositories = $composer['repositories'] ?? [];
         $newRepos = [];
         $removed = false;
@@ -133,5 +143,52 @@ class RemovePackagesCommand extends Command
         }
         // Fallback
         $this->warn("Could not remove vendor link automatically: {$link}. Remove manually if needed.");
+    }
+
+    protected function deletePackageDir(string $vendor, string $package): void
+    {
+        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
+        $dir = base_path("{$packagesRoot}/{$vendor}/{$package}");
+        if (!is_dir($dir)) {
+            return;
+        }
+        $it = new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS);
+        $ri = new \RecursiveIteratorIterator($it, \RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($ri as $file) {
+            if ($file->isDir()) {
+                @rmdir($file->getPathname());
+            } else {
+                @unlink($file->getPathname());
+            }
+        }
+        @rmdir($dir);
+        $this->info("Deleted directory: {$dir}");
+    }
+
+    protected function resolveRepoUrl(string $vendor, string $package): string
+    {
+        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
+        $expected = base_path("{$packagesRoot}/{$vendor}/{$package}");
+        $dir = $expected;
+        if (!is_dir($expected)) {
+            $vendorDir = base_path("{$packagesRoot}/{$vendor}");
+            foreach (glob($vendorDir . '/*', GLOB_ONLYDIR) as $d) {
+                $cj = $d . '/composer.json';
+                if (is_file($cj)) {
+                    $json = json_decode((string) @file_get_contents($cj), true);
+                    if (($json['name'] ?? '') === "{$vendor}/{$package}") {
+                        $dir = $d;
+                        break;
+                    }
+                }
+            }
+        }
+        $base = rtrim(base_path(), DIRECTORY_SEPARATOR);
+        $abs = rtrim($dir, DIRECTORY_SEPARATOR);
+        if (str_starts_with($abs, $base)) {
+            $rel = ltrim(substr($abs, strlen($base)), DIRECTORY_SEPARATOR);
+            return str_replace('\\', '/', $rel);
+        }
+        return str_replace('\\', '/', $dir);
     }
 }

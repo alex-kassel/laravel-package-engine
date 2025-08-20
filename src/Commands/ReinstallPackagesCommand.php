@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 
 class ReinstallPackagesCommand extends Command
 {
-    protected $signature = 'packages:reinstall {name? : vendor/package} {--all} {--d|dev} {--branch=}';
+    protected $signature = 'packages:reinstall {names?* : vendor/package list} {--all} {--d|dev} {--branch=}';
     protected $description = 'Remove and re-install local package(s): updates composer repository/require and recreates link';
 
     public function handle(): int
@@ -22,20 +22,26 @@ class ReinstallPackagesCommand extends Command
                 $targets[] = "{$vendor}/{$package}";
             }
         } else {
-            $name = (string) $this->argument('name');
-            if (!$name || !preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', $name)) {
-                $this->error('Please provide a valid vendor/package name or use --all.');
+            $names = (array) $this->argument('names');
+            if (empty($names)) {
+                $this->error('Please provide one or more vendor/package names or use --all.');
                 return 1;
             }
-            $targets[] = $name;
+            foreach ($names as $n) {
+                if (!preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', (string) $n)) {
+                    $this->error("Invalid package name: {$n}");
+                    return 1;
+                }
+                $targets[] = (string) $n;
+            }
         }
 
         foreach ($targets as $name) {
             // Remove
-            $this->call('packages:remove', ['name' => $name]);
+            $this->call('packages:remove', ['names' => [$name]]);
             // Re-install with optional --dev
             $this->call('packages:install', [
-                'name' => $name,
+                'names' => [$name],
                 '--dev' => (bool) $this->option('dev'),
                 '--branch' => $this->option('branch'),
             ]);

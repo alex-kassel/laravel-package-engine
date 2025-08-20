@@ -10,7 +10,7 @@ use Symfony\Component\Process\Process;
 
 class InstallPackagesCommand extends Command
 {
-    protected $signature = 'packages:install {name? : vendor/package} {--all} {--d|dev} {--branch=}';
+    protected $signature = 'packages:install {names?* : vendor/package list} {--all} {--d|dev} {--branch=} {--alias=}';
     protected $description = 'Install a local package (composer repository + symlink, use --dev for dev dependencies)';
 
     protected Filesystem $files;
@@ -38,24 +38,29 @@ class InstallPackagesCommand extends Command
                 $packages[] = "{$vendor}/{$package}";
             }
         } else {
-            $name = $this->argument('name');
-            if (!$name || !preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', $name)) {
-                $this->error('Please provide a valid vendor/package name or use --all.');
+            $names = (array) $this->argument('names');
+            if (empty($names)) {
+                $this->error('Please provide one or more vendor/package names or use --all.');
                 return 1;
             }
-            $packages[] = $name;
+            foreach ($names as $n) {
+                if (!preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', (string) $n)) {
+                    $this->error("Invalid package name: {$n}");
+                    return 1;
+                }
+                $packages[] = (string) $n;
+            }
         }
 
         foreach ($packages as $name) {
             [$vendor, $package] = explode('/', $name);
-            $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
-            $packagePath = base_path("{$packagesRoot}/{$vendor}/{$package}");
-            if (!$this->files->exists($packagePath)) {
+            $packagePath = $this->resolvePackageDirectory($vendor, $package);
+            if (!$packagePath || !$this->files->exists($packagePath)) {
                 $this->warn("Package not found: {$packagePath}");
                 continue;
             }
 
-            $this->addComposerRepository($vendor, $package);
+            $this->addComposerRepository($vendor, $package, $packagePath);
             $this->addComposerRequire($vendor, $package);
             $this->runComposerUpdate($vendor, $package);
             $this->createSymlink($vendor, $package, $packagePath);
@@ -65,12 +70,11 @@ class InstallPackagesCommand extends Command
         return 0;
     }
 
-    protected function addComposerRepository(string $vendor, string $package): void
+    protected function addComposerRepository(string $vendor, string $package, string $resolvedPath): void
     {
         $composerFile = base_path('composer.json');
         $composer = json_decode(file_get_contents($composerFile), true);
-
-        $repoPath = config('laravel-package-engine.packages_path', 'packages') . "/{$vendor}/{$package}";
+        $repoPath = $this->relativePathFromBase($resolvedPath);
         $repositories = $composer['repositories'] ?? [];
         $already = false;
         foreach ($repositories as $repo) {
@@ -170,5 +174,39 @@ class InstallPackagesCommand extends Command
     private function cmdShell(): string
     {
         return '\\' === DIRECTORY_SEPARATOR ? 'cmd' : 'sh';
+    }
+
+    protected function resolvePackageDirectory(string $vendor, string $package): ?string
+    {
+        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
+        $expected = base_path("{$packagesRoot}/{$vendor}/{$package}");
+        if (is_dir($expected)) {
+            return $expected;
+        }
+        $vendorDir = base_path("{$packagesRoot}/{$vendor}");
+        if (!is_dir($vendorDir)) {
+            return null;
+        }
+        foreach (glob($vendorDir . '/*', GLOB_ONLYDIR) as $dir) {
+            $cj = $dir . '/composer.json';
+            if (is_file($cj)) {
+                $json = json_decode((string) @file_get_contents($cj), true);
+                if (($json['name'] ?? '') === "{$vendor}/{$package}") {
+                    return $dir;
+                }
+            }
+        }
+        return null;
+    }
+
+    protected function relativePathFromBase(string $absPath): string
+    {
+        $base = rtrim(base_path(), DIRECTORY_SEPARATOR);
+        $abs = rtrim($absPath, DIRECTORY_SEPARATOR);
+        if (str_starts_with($abs, $base)) {
+            $rel = ltrim(substr($abs, strlen($base)), DIRECTORY_SEPARATOR);
+            return str_replace('\\', '/', $rel);
+        }
+        return $absPath;
     }
 }

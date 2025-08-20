@@ -12,7 +12,7 @@ class PackageServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->publishes([
-                __DIR__ . '/../../config/package.php' => config_path('{{ vendor }}/{{ package }}.php'),
+                __DIR__ . '/../../config/package.php' => config_path('{{ vendor }}/{{ package }}/config.php'),
             ], 'config');
         }
 
