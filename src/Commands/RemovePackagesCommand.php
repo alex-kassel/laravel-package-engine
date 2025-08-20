@@ -163,6 +163,31 @@ class RemovePackagesCommand extends Command
         }
         @rmdir($dir);
         $this->info("Deleted directory: {$dir}");
+        
+        // Clean up empty vendor directory
+        $this->removeEmptyVendorDir($vendor);
+    }
+
+    protected function removeEmptyVendorDir(string $vendor): void
+    {
+        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
+        $vendorDir = base_path("{$packagesRoot}/{$vendor}");
+        
+        if (!is_dir($vendorDir)) {
+            return;
+        }
+        
+        // Check if vendor directory is empty (no files or directories)
+        $isEmpty = true;
+        $iterator = new \FilesystemIterator($vendorDir, \FilesystemIterator::SKIP_DOTS);
+        foreach ($iterator as $item) {
+            $isEmpty = false;
+            break;
+        }
+        
+        if ($isEmpty && @rmdir($vendorDir)) {
+            $this->info("Removed empty vendor directory: {$vendorDir}");
+        }
     }
 
     protected function resolveRepoUrl(string $vendor, string $package): string
