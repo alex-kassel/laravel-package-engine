@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace {{ namespace }}\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class PackageServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        if ($this->app->runningInConsole()) {
+            $this->publishes([
+                __DIR__ . '/../../config/package.php' => config_path('{{ vendor }}/{{ package }}.php'),
+            ], 'config');
+        }
+
+        $this->loadRoutesFrom(__DIR__.'/../../routes/web.php');
+        $this->loadViewsFrom(__DIR__.'/../../resources/views', '{{ package }}');
+        $this->loadMigrationsFrom(__DIR__.'/../../database/migrations');
+    }
+
+    public function register(): void
+    {
+        $this->mergeConfigFrom(
+            __DIR__.'/../../config/package.php', '{{ vendor }}.{{ package }}'
+        );
+    }
+}
