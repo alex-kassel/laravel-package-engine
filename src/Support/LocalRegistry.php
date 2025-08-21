@@ -18,20 +18,31 @@ final class LocalRegistry
         if (!is_file($this->file)) {
             return [];
         }
-        $json = json_decode((string) @file_get_contents($this->file), true);
+        $content = @file_get_contents($this->file);
+        if ($content === false) {
+            return [];
+        }
+        $json = json_decode($content, true);
         return is_array($json) ? $json : [];
     }
 
     public function add(string $packageName, string $absPath): void
     {
         $data = $this->all();
-        $data[$packageName] = $this->normalizePath($absPath);
+        $normalized = $this->normalizePath($absPath);
+        if (isset($data[$packageName]) && $data[$packageName] === $normalized) {
+            return; // Keine Änderung nötig
+        }
+        $data[$packageName] = $normalized;
         $this->persist($data);
     }
 
     public function remove(string $packageName): void
     {
         $data = $this->all();
+        if (!array_key_exists($packageName, $data)) {
+            return;
+        }
         unset($data[$packageName]);
         $this->persist($data);
     }
@@ -42,7 +53,11 @@ final class LocalRegistry
         if (!is_dir($dir)) {
             @mkdir($dir, 0775, true);
         }
-        @file_put_contents($this->file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            throw new \RuntimeException('JSON encoding failed');
+        }
+        @file_put_contents($this->file, $json . PHP_EOL);
     }
 
     private function normalizePath(string $p): string
