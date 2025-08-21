@@ -1,14 +1,14 @@
 # {{ packageStudly }}
 
-Ein Laravel-Paket innerhalb Ihres Monorepos unter `packages/{{ vendor }}/{{ package }}`.
+A Laravel package scaffold located at `packages/{{ vendor }}/{{ package }}` in your monorepo.
 
-## Installation (im App-Repo)
+## Install in your app
 
-- Via Composer Path-Repository eingebunden und `{{ vendor }}/{{ package }}` als Abhängigkeit aufnehmen.
+Add it as a Composer path repository and require `{{ vendor }}/{{ package }}` in your app.
 
-## Entwicklung
+## Development
 
-- Routen: `routes/web.php`
-- Views: `resources/views`
-- Konfiguration: `config/package.php`
+- Routes: `routes/web.php`
+- Views: `resources/views` (Blade namespace: `{{ package }}::`)
+- Config: `config/package.php`
 - Service Provider: `src/Providers/PackageServiceProvider.php`

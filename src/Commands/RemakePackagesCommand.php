@@ -5,26 +5,22 @@ declare(strict_types=1);
 namespace AlexKassel\LaravelPackageEngine\Commands;
 
 use Illuminate\Console\Command;
+use AlexKassel\LaravelPackageEngine\Support\LocalRegistry;
 
 class RemakePackagesCommand extends Command
 {
-    protected $signature = 'packages:remake {names?* : vendor/package list or --all} {--all} {--i|install} {--d|dev} {--alias=} {--branch=}';
+    protected $signature = 'packages:remake {names?* : vendor/package list or --all} {--all} {--i|install} {--d|dev} {--branch=} {--path=}';
     protected $description = 'Remove and recreate package(s) (delete dir, re-create from stubs, optional install)';
 
     public function handle(): int
     {
         $targets = [];
-        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
-        $base = base_path($packagesRoot);
         if ($this->option('all')) {
-            if (!is_dir($base)) {
-                $this->error('No /packages directory found.');
+            $reg = new LocalRegistry();
+            $targets = array_keys($reg->all());
+            if (empty($targets)) {
+                $this->error('No self-created packages recorded.');
                 return 1;
-            }
-            foreach (glob($base . '/*/*', GLOB_ONLYDIR) as $dir) {
-                $package = basename($dir);
-                $vendor = basename(dirname($dir));
-                $targets[] = "{$vendor}/{$package}";
             }
         } else {
             $names = (array) $this->argument('names');
@@ -41,12 +37,6 @@ class RemakePackagesCommand extends Command
             }
         }
 
-        $alias = $this->option('alias');
-        if ($alias && count($targets) > 1) {
-            $this->warn('--alias is only applied for a single package. Ignoring for multiple targets.');
-            $alias = null;
-        }
-
         foreach ($targets as $name) {
             // Remove, then re-create (deletes dir by default)
             $this->call('packages:remove', ['names' => [$name]]);
@@ -56,8 +46,8 @@ class RemakePackagesCommand extends Command
                 '--dev' => (bool) $this->option('dev'),
                 '--branch' => $this->option('branch'),
             ];
-            if ($alias) {
-                $args['--alias'] = $alias;
+            if ($this->option('path')) {
+                $args['--path'] = $this->option('path');
             }
             $this->call('packages:make', $args);
         }

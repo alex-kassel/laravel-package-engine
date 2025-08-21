@@ -7,11 +7,14 @@ namespace AlexKassel\LaravelPackageEngine\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Str;
 use Illuminate\Filesystem\Filesystem;
+use AlexKassel\LaravelPackageEngine\Support\PackageManager;
+use AlexKassel\LaravelPackageEngine\Support\LocalRegistry;
 
 class MakePackageCommand extends Command
 {
-    protected $signature = 'packages:make {names* : One or more vendor/package identifiers} {--i|install} {--d|dev} {--alias=} {--branch=}';
+    protected $signature = 'packages:make {names* : One or more vendor/package identifiers} {--i|install} {--d|dev} {--branch=} {--path=}';
     protected $description = 'Create new local package(s) under /{packages_path} (use --dev to install as dev dependency)';
+    protected $aliases = ['packages:create', 'packages:new'];
 
     protected Filesystem $files;
 
@@ -29,24 +32,18 @@ class MakePackageCommand extends Command
             return 1;
         }
 
-        $alias = $this->option('alias');
-        if ($alias && count($names) > 1) {
-            $this->warn('--alias is only applied when creating a single package. Ignoring for multiple names.');
-            $alias = null;
-        }
-
-        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
+        // determine packages root with --path taking precedence
+        $packagesRoot = (string) ($this->option('path') ?: config('laravel-package-engine.packages_path', 'packages'));
 
         // Ensure vendor root exists; if created now, add to .gitignore
         $packagesRootAbs = base_path($packagesRoot);
-        $createdRoot = false;
         if (!is_dir($packagesRootAbs)) {
             $this->files->makeDirectory($packagesRootAbs, 0755, true);
-            $createdRoot = true;
-        }
-        if ($createdRoot) {
             $this->ensurePackagesPathInGitignore($packagesRoot);
         }
+
+        $pm = new PackageManager();
+        $registry = new LocalRegistry();
 
         foreach ($names as $name) {
             if (!preg_match('#^[a-z0-9\-]+/[a-z0-9\-]+$#i', (string) $name)) {
@@ -55,11 +52,19 @@ class MakePackageCommand extends Command
             }
 
             [$vendor, $package] = explode('/', $name);
+
+            // Conflict detection against require/require-dev and repositories
+            $conflicts = $pm->detectConflicts($vendor, $package);
+            if (!empty($conflicts)) {
+                foreach ($conflicts as $msg) { $this->warn($msg); }
+                // continue with creation, just warn
+            }
+
             $vendorStudly = Str::studly(str_replace('-', ' ', $vendor));
             $packageStudly = Str::studly(str_replace('-', ' ', $package));
             $namespace = "{$vendorStudly}\\{$packageStudly}";
 
-            $dirName = $alias ?: $package;
+            $dirName = $package; // alias removed
             $basePath = base_path("{$packagesRoot}/{$vendor}/{$dirName}");
             if ($this->files->exists($basePath)) {
                 $this->error("Package directory already exists: {$basePath}");
@@ -75,6 +80,27 @@ class MakePackageCommand extends Command
                 '{{ namespace }}' => $namespace,
                 '{{ year }}' => date('Y'),
             ]);
+
+            // Initialize git repo with proper default branch
+            $branchBase = $pm->normalizeBranchBase((string) ($this->option('branch') ?: config('laravel-package-engine.default_branch', 'dev-main')));
+            $pm->initGitRepo($basePath, $branchBase);
+
+            // Ensure package composer.json has a version matching the branch base (e.g., dev-main)
+            $pkgComposerFile = $basePath . DIRECTORY_SEPARATOR . 'composer.json';
+            if (is_file($pkgComposerFile)) {
+                $pkgComposer = json_decode((string) @file_get_contents($pkgComposerFile), true) ?: [];
+                $expectedVersion = 'dev-' . $branchBase;
+                if (!isset($pkgComposer['version']) || $pkgComposer['version'] !== $expectedVersion) {
+                    $pkgComposer['version'] = $expectedVersion;
+                    @file_put_contents($pkgComposerFile, json_encode($pkgComposer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+                }
+            }
+
+            // Add composer path repository immediately (before install)
+            $pm->ensureComposerRepository($basePath);
+
+            // Track created package in local registry
+            $registry->add("{$vendor}/{$package}", $basePath);
 
             $this->info("Package created at: {$basePath}");
 
@@ -92,7 +118,7 @@ class MakePackageCommand extends Command
 
     protected function copyStubs(string $basePath, array $replacements): void
     {
-    $customStubRoot = base_path('stubs/alex-kassel/laravel-package-engine');
+        $customStubRoot = base_path('stubs/alex-kassel/laravel-package-engine');
         $defaultStubRoot = __DIR__ . '/../../stubs/package';
         $stubRoot = is_dir($customStubRoot) ? $customStubRoot : $defaultStubRoot;
 
@@ -124,15 +150,22 @@ class MakePackageCommand extends Command
     {
         $gi = base_path('.gitignore');
         $line = '/' . trim($packagesRoot, '/') . '/';
+
         if (!file_exists($gi)) {
             file_put_contents($gi, $line . PHP_EOL);
-            $this->info("Added {$line} to .gitignore");
+            $this->info(".gitignore was created and {$line} was added");
             return;
         }
-        $content = file_get_contents($gi);
-        if (strpos($content, $line) === false) {
-            file_put_contents($gi, rtrim($content) . PHP_EOL . $line . PHP_EOL);
-            $this->info("Added {$line} to .gitignore");
+
+        $lines = file($gi, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        foreach ($lines as $existing) {
+            if (rtrim($existing, '/') === rtrim($line, '/')) {
+                return;
+            }
         }
+
+        file_put_contents($gi, PHP_EOL . $line . PHP_EOL, FILE_APPEND);
+        $this->info("{$line} was added to .gitignore");
     }
 }

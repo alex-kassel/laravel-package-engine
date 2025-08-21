@@ -7,11 +7,12 @@ namespace AlexKassel\LaravelPackageEngine\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Symfony\Component\Process\Process;
+use AlexKassel\LaravelPackageEngine\Support\PackageManager;
 
 class InstallPackagesCommand extends Command
 {
-    protected $signature = 'packages:install {names?* : vendor/package list} {--all} {--d|dev} {--branch=} {--alias=}';
-    protected $description = 'Install a local package (composer repository + symlink, use --dev for dev dependencies)';
+    protected $signature = 'packages:install {names?* : vendor/package list} {--all} {--d|dev} {--branch=}';
+    protected $description = 'Install a local package (uses composer require; linking handled by Composer via path repository)';
 
     protected Filesystem $files;
 
@@ -23,19 +24,22 @@ class InstallPackagesCommand extends Command
 
     public function handle()
     {
-    $packagesPath = base_path((string) config('laravel-package-engine.packages_path', 'packages'));
-        if (!is_dir($packagesPath)) {
-            $this->error('No /packages directory found.');
-            return 1;
-        }
+        $pm = new PackageManager();
 
         $packages = [];
-
         if ($this->option('all')) {
-            foreach (glob($packagesPath . '/*/*', GLOB_ONLYDIR) as $dir) {
-                $package = basename($dir);
-                $vendor = basename(dirname($dir));
-                $packages[] = "{$vendor}/{$package}";
+            $seen = [];
+            foreach ($pm->packageRoots() as $root) {
+                foreach (glob($root . '/*/*', GLOB_ONLYDIR) as $dir) {
+                    $package = basename($dir);
+                    $vendor = basename(dirname($dir));
+                    $name = "$vendor/$package";
+                    if (!isset($seen[$name])) { $packages[] = $name; $seen[$name] = true; }
+                }
+            }
+            if (empty($packages)) {
+                $this->warn('No local packages found under any packages* roots.');
+                return 0;
             }
         } else {
             $names = (array) $this->argument('names');
@@ -54,159 +58,48 @@ class InstallPackagesCommand extends Command
 
         foreach ($packages as $name) {
             [$vendor, $package] = explode('/', $name);
-            $packagePath = $this->resolvePackageDirectory($vendor, $package);
-            if (!$packagePath || !$this->files->exists($packagePath)) {
-                $this->warn("Package not found: {$packagePath}");
+            $packagePath = $pm->resolvePackageDirectoryAcrossRoots($vendor, $package);
+            if (!$packagePath || !is_dir($packagePath)) {
+                $this->warn("Package not found locally: {$name}");
                 continue;
             }
 
-            $this->addComposerRepository($vendor, $package, $packagePath);
-            $this->addComposerRequire($vendor, $package);
-            $this->runComposerUpdate($vendor, $package);
-            $this->createSymlink($vendor, $package, $packagePath);
-            $this->info("Installed: {$vendor}/{$package}");
+            // Warn about potential conflicts (e.g., duplicate path repo or already required)
+            foreach ($pm->detectConflicts($vendor, $package) as $msg) {
+                $this->warn($msg);
+            }
+
+            // Ensure path repository exists so Composer can resolve and link
+            $pm->ensureComposerRepository($packagePath);
+
+            $branchInput = (string) ($this->option('branch') ?: config('laravel-package-engine.default_branch', 'dev-main'));
+            $baseBranch = $pm->normalizeBranchBase($branchInput);
+            $version = 'dev-' . $baseBranch;
+
+            // Ensure local package composer.json has matching version
+            $pkgComposerFile = $packagePath . DIRECTORY_SEPARATOR . 'composer.json';
+            if (is_file($pkgComposerFile)) {
+                $pkgComposer = json_decode((string) @file_get_contents($pkgComposerFile), true) ?: [];
+                if (($pkgComposer['version'] ?? null) !== $version) {
+                    $pkgComposer['version'] = $version;
+                    @file_put_contents($pkgComposerFile, json_encode($pkgComposer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+                }
+            }
+
+            $code = $pm->composerRequire($name, $version, (bool) $this->option('dev'));
+            if ($code !== 0) {
+                $this->warn("Composer require failed for {$name}");
+            } else {
+                $this->info("Installed: {$name}");
+            }
         }
 
         return 0;
     }
 
-    protected function addComposerRepository(string $vendor, string $package, string $resolvedPath): void
-    {
-        $composerFile = base_path('composer.json');
-        $composer = json_decode(file_get_contents($composerFile), true);
-        $repoPath = $this->relativePathFromBase($resolvedPath);
-        $repositories = $composer['repositories'] ?? [];
-        $already = false;
-        foreach ($repositories as $repo) {
-            if (($repo['type'] ?? '') === 'path' && ($repo['url'] ?? '') === $repoPath) {
-                $already = true;
-                break;
-            }
-        }
-        if (!$already) {
-            $composer['repositories'][] = [
-                'type' => 'path',
-                'url' => $repoPath,
-                'options' => ['symlink' => true]
-            ];
-            file_put_contents($composerFile, json_encode($composer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            $this->info("Added repository to composer.json: {$repoPath}");
-        }
-    }
-
-    protected function addComposerRequire(string $vendor, string $package): void
-    {
-        $composerFile = base_path('composer.json');
-        $composer = json_decode(file_get_contents($composerFile), true);
-
-        $packageName = "{$vendor}/{$package}";
-        $requireType = $this->option('dev') ? 'require-dev' : 'require';
-        $version = (string) ($this->option('branch') ?: config('laravel-package-engine.default_branch', 'dev-master'));
-
-        if ($requireType === 'require-dev' && !isset($composer['require-dev'])) {
-            $composer['require-dev'] = [];
-        }
-
-        if (!isset($composer[$requireType][$packageName]) || $composer[$requireType][$packageName] !== $version) {
-            $otherType = $requireType === 'require' ? 'require-dev' : 'require';
-            if (isset($composer[$otherType][$packageName])) {
-                unset($composer[$otherType][$packageName]);
-                $this->info("Removed {$packageName} from {$otherType} section");
-            }
-
-            // Set or update in the selected section
-            $composer[$requireType][$packageName] = $version;
-            file_put_contents($composerFile, json_encode($composer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            $this->info("Added {$packageName}:{$version} to {$requireType} section in composer.json");
-        }
-    }
-
-    protected function runComposerUpdate(string $vendor, string $package): void
-    {
-        $packageName = "{$vendor}/{$package}";
-        $this->info("Running composer update {$packageName} ...");
-        $process = new Process(['composer', 'update', $packageName]);
-        $process->setTimeout(300);
-        $process->run(function ($type, $buffer) {
-            echo $buffer;
-        });
-        if (!$process->isSuccessful()) {
-            $this->warn("Composer update failed for {$packageName}");
-        }
-    }
-
-    protected function createSymlink(string $vendor, string $package, string $packagePath): void
-    {
-        $vendorPath = base_path("vendor/{$vendor}");
-        if (!is_dir($vendorPath)) {
-            mkdir($vendorPath, 0777, true);
-        }
-        $link = base_path("vendor/{$vendor}/{$package}");
-        if (file_exists($link)) {
-            if (is_link($link)) {
-                unlink($link);
-            } else {
-                $this->warn("Vendor path already exists and is not a symlink: {$link}");
-                return;
-            }
-        }
-        // Try native symlink first
-        $ok = @symlink($packagePath, $link);
-        if (!$ok) {
-            // On Windows, fall back to directory junction to avoid permission issues
-            if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                $cmd = sprintf('cmd /C mklink /J "%s" "%s"', $link, $packagePath);
-                $process = new \Symfony\Component\Process\Process([$this->cmdShell(), '/C', 'mklink', '/J', $link, $packagePath]);
-                $process->run();
-                if ($process->isSuccessful()) {
-                    $this->info("Junction created: {$link} -> {$packagePath}");
-                    return;
-                }
-                $this->warn("Failed to create junction (mklink) for {$link}. Output: " . $process->getErrorOutput());
-            }
-            // If still not ok, don't fail the whole install
-            $this->warn("Symlink could not be created (permission denied). You can link manually if needed.");
-            return;
-        }
-        $this->info("Symlink created: {$link} -> {$packagePath}");
-    }
-
-    private function cmdShell(): string
-    {
-        return '\\' === DIRECTORY_SEPARATOR ? 'cmd' : 'sh';
-    }
-
     protected function resolvePackageDirectory(string $vendor, string $package): ?string
     {
-        $packagesRoot = (string) config('laravel-package-engine.packages_path', 'packages');
-        $expected = base_path("{$packagesRoot}/{$vendor}/{$package}");
-        if (is_dir($expected)) {
-            return $expected;
-        }
-        $vendorDir = base_path("{$packagesRoot}/{$vendor}");
-        if (!is_dir($vendorDir)) {
-            return null;
-        }
-        foreach (glob($vendorDir . '/*', GLOB_ONLYDIR) as $dir) {
-            $cj = $dir . '/composer.json';
-            if (is_file($cj)) {
-                $json = json_decode((string) @file_get_contents($cj), true);
-                if (($json['name'] ?? '') === "{$vendor}/{$package}") {
-                    return $dir;
-                }
-            }
-        }
-        return null;
-    }
-
-    protected function relativePathFromBase(string $absPath): string
-    {
-        $base = rtrim(base_path(), DIRECTORY_SEPARATOR);
-        $abs = rtrim($absPath, DIRECTORY_SEPARATOR);
-        if (str_starts_with($abs, $base)) {
-            $rel = ltrim(substr($abs, strlen($base)), DIRECTORY_SEPARATOR);
-            return str_replace('\\', '/', $rel);
-        }
-        return $absPath;
+        // kept for backward compatibility; now delegate to multi-root resolver
+        return (new PackageManager())->resolvePackageDirectoryAcrossRoots($vendor, $package);
     }
 }
