@@ -8,5 +8,5 @@ return [
 
     // Default branch/version constraint used when requiring local packages
     // e.g. 'dev-master' or 'dev-main'
-    'default_branch' => 'dev-master',
+    'default_branch' => 'dev-main',
 ];
