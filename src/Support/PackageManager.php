@@ -19,7 +19,9 @@ class PackageManager
         $roots = [];
         $configured = (string) config('laravel-package-engine.packages_path', 'packages');
         $roots[] = base_path($configured);
-        $roots[] = base_path('packages');
+        if ($configured !== 'packages') {
+            $roots[] = base_path('packages');
+        }
         // discover siblings that start with 'packages'
         foreach (glob(base_path('packages*')) as $path) {
             if (is_dir($path)) { $roots[] = $path; }
@@ -106,8 +108,7 @@ class PackageManager
             if (($repo['type'] ?? '') !== 'path' || !isset($repo['url'])) { continue; }
             $url = str_replace('\\', '/', (string) $repo['url']);
             if ($this->globLike($url)) {
-                $regex = $this->globToRegex($url);
-                if (preg_match($regex, $repoPath)) {
+                if (fnmatch($url, $repoPath)) {
                     return false; // covered by a glob repo
                 }
             } else {
@@ -155,7 +156,10 @@ class PackageManager
                     if (!is_file($cj)) { continue; }
                     $json = json_decode((string) @file_get_contents($cj), true);
                     if (($json['name'] ?? null) === $name) {
-                        $hits[] = realpath($p) ?: $p;
+                        $real = realpath($p) ?: $p;
+                        if (!in_array($real, $hits, true)) {
+                            $hits[] = $real;
+                        }
                     }
                 }
             }
@@ -196,7 +200,7 @@ class PackageManager
         $process = new Process($args, base_path());
         $process->setTimeout(600);
         $process->run(function ($type, $buffer) { echo $buffer; });
-        return $process->isSuccessful() ? 0 : 1;
+        return $process->getExitCode();
     }
 
     public function composerRemove(string $packageName): int
@@ -205,13 +209,16 @@ class PackageManager
         $process = new Process($args, base_path());
         $process->setTimeout(600);
         $process->run(function ($type, $buffer) { echo $buffer; });
-        return $process->isSuccessful() ? 0 : 1;
+        return $process->getExitCode();
     }
 
     public function relativePathFromBase(string $absPath): string
     {
         $base = rtrim(base_path(), DIRECTORY_SEPARATOR);
         $abs = rtrim($absPath, DIRECTORY_SEPARATOR);
+        if ($abs === $base) {
+            return '.';
+        }
         if (str_starts_with($abs, $base)) {
             $rel = ltrim(substr($abs, strlen($base)), DIRECTORY_SEPARATOR);
             return str_replace('\\', '/', $rel);
