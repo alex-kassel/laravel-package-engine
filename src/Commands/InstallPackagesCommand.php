@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Symfony\Component\Process\Process;
 use AlexKassel\LaravelPackageEngine\Support\PackageManager;
+use AlexKassel\LaravelPackageEngine\Support\LocalRegistry;
 
 class InstallPackagesCommand extends Command
 {
@@ -25,6 +26,7 @@ class InstallPackagesCommand extends Command
     public function handle()
     {
         $pm = new PackageManager();
+        $registry = new LocalRegistry();
 
         $packages = [];
         if ($this->option('all')) {
@@ -58,7 +60,22 @@ class InstallPackagesCommand extends Command
 
         foreach ($packages as $name) {
             [$vendor, $package] = explode('/', $name);
-            $packagePath = $pm->resolvePackageDirectoryAcrossRoots($vendor, $package);
+
+            // 1) Registry path (created via packages:make)
+            $regMap = $registry->all();
+            $packagePath = $regMap[$name] ?? null;
+
+            // 2) Known roots fallback
+            if (!$packagePath) {
+                $packagePath = $pm->resolvePackageDirectoryAcrossRoots($vendor, $package);
+            }
+
+            // 3) Path repositories scan as last resort
+            if (!$packagePath) {
+                $hits = $pm->findPackageInRepositories($vendor, $package);
+                if (!empty($hits)) { $packagePath = $hits[0]; }
+            }
+
             if (!$packagePath || !is_dir($packagePath)) {
                 $this->warn("Package not found locally: {$name}");
                 continue;
