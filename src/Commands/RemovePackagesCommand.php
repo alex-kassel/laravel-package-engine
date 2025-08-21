@@ -21,16 +21,16 @@ class RemovePackagesCommand extends Command
         parent::__construct();
         $this->files = new Filesystem();
     }
-
+    
     public function handle(): int
     {
-    $packagesPath = base_path((string) config('laravel-package-engine.packages_path', 'packages'));
+        $packagesPath = base_path((string) config('laravel-package-engine.packages_path', 'packages'));
         if (!is_dir($packagesPath)) {
             $this->error('No /packages directory found.');
             return 1;
         }
 
-    $targets = [];
+        $targets = [];
 
         if ($this->option('all')) {
             foreach (glob($packagesPath . '/*/*', GLOB_ONLYDIR) as $dir) {
@@ -72,7 +72,7 @@ class RemovePackagesCommand extends Command
     {
         $composerFile = base_path('composer.json');
         $composer = json_decode(file_get_contents($composerFile), true);
-    $repoPath = $this->resolveRepoUrl($vendor, $package);
+        $repoPath = $this->resolveRepoUrl($vendor, $package);
         $repositories = $composer['repositories'] ?? [];
         $newRepos = [];
         $removed = false;
@@ -119,6 +119,20 @@ class RemovePackagesCommand extends Command
         });
         if (!$process->isSuccessful()) {
             $this->warn("Composer update encountered issues after removing {$packageName}");
+        }
+        # $this->runComposerDumpAutoload();
+    }
+
+    protected function runComposerDumpAutoload(): void
+    {
+        $this->info("Running composer dump-autoload ...");
+        $process = new Process(['composer', 'dump-autoload']);
+        $process->setTimeout(300);
+        $process->run(function ($type, $buffer) {
+            echo $buffer;
+        });
+        if (!$process->isSuccessful()) {
+            $this->warn("Composer dump-autoload encountered issues");
         }
     }
 
